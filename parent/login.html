@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Parental Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        :root{
+            --primary:#6C5CE7;--primary-light:#A29BFE;--accent:#00CEFF;
+            --dark:#0B0D17;--dark2:#141829;--dark3:#1C2038;
+            --gray:#7B84A8;--light:#E8EAF6;--white:#FFF;
+            --glass:rgba(255,255,255,0.04);--border:rgba(255,255,255,0.06);
+            --error:#FF6B6B;--success:#55EFC4;
+        }
+        html,body{height:100%}
+        body{
+            font-family:'DM Sans',sans-serif;background:var(--dark);color:var(--white);
+            display:flex;align-items:center;justify-content:center;
+            min-height:100vh;padding:20px;position:relative;overflow:hidden;
+        }
+
+        /* Animated Background */
+        .bg-mesh{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+        .bg-mesh .orb{position:absolute;border-radius:50%;filter:blur(120px);opacity:.15;animation:orbFloat 25s ease-in-out infinite}
+        .bg-mesh .orb:nth-child(1){width:500px;height:500px;background:#6C5CE7;top:-15%;left:-10%;animation-delay:0s}
+        .bg-mesh .orb:nth-child(2){width:400px;height:400px;background:#00CEFF;bottom:-15%;right:-10%;animation-delay:-8s}
+        .bg-mesh .orb:nth-child(3){width:350px;height:350px;background:#FF6B6B;top:50%;left:60%;animation-delay:-16s}
+        @keyframes orbFloat{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(50px,-30px) scale(1.1)}66%{transform:translate(-30px,20px) scale(.9)}}
+
+        .grid-overlay{position:fixed;inset:0;z-index:0;pointer-events:none;
+            background-image:linear-gradient(rgba(255,255,255,.012) 1px,transparent 1px),
+            linear-gradient(90deg,rgba(255,255,255,.012) 1px,transparent 1px);
+            background-size:80px 80px}
+
+        /* Auth Container */
+        .auth-wrapper{position:relative;z-index:1;width:100%;max-width:440px;animation:slideUp .8s cubic-bezier(.16,1,.3,1)}
+        @keyframes slideUp{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:translateY(0)}}
+
+        .auth-card{
+            background:var(--dark2);border:1px solid var(--border);border-radius:28px;
+            padding:48px 36px;backdrop-filter:blur(20px);
+            box-shadow:0 40px 80px rgba(0,0,0,.5),0 0 60px rgba(108,92,231,.08);
+        }
+
+        /* Logo */
+        .auth-logo{text-align:center;margin-bottom:32px}
+        .auth-logo .logo-icon{
+            width:64px;height:64px;background:linear-gradient(135deg,var(--primary),var(--accent));
+            border-radius:18px;display:inline-flex;align-items:center;justify-content:center;
+            font-size:28px;margin-bottom:16px;box-shadow:0 12px 40px rgba(108,92,231,.3);
+            animation:logoPulse 3s ease-in-out infinite;
+        }
+        @keyframes logoPulse{0%,100%{box-shadow:0 12px 40px rgba(108,92,231,.3)}50%{box-shadow:0 12px 60px rgba(108,92,231,.5)}}
+        .auth-logo h1{font-family:'Outfit';font-size:28px;font-weight:800;margin-bottom:6px}
+        .auth-logo p{color:var(--gray);font-size:14px}
+
+        /* Tabs */
+        .tabs{display:flex;background:var(--glass);border:1px solid var(--border);border-radius:14px;padding:4px;margin-bottom:28px}
+        .tab{flex:1;text-align:center;padding:12px;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;transition:all .3s;color:var(--gray)}
+        .tab.active{background:linear-gradient(135deg,var(--primary),#8B5CF6);color:#fff;box-shadow:0 4px 20px rgba(108,92,231,.3)}
+        .tab:not(.active):hover{color:var(--white)}
+
+        /* Messages */
+        .error-msg{background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.2);color:var(--error);padding:14px 16px;border-radius:12px;font-size:13px;font-weight:600;margin-bottom:18px;display:none;animation:shake .4s}
+        .success-msg{background:rgba(85,239,196,.1);border:1px solid rgba(85,239,196,.2);color:var(--success);padding:14px 16px;border-radius:12px;font-size:13px;font-weight:600;margin-bottom:18px;display:none}
+        @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+
+        /* Form */
+        .form-group{margin-bottom:18px}
+        .form-group label{display:block;font-size:12px;font-weight:700;color:var(--gray);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+        .form-group input{
+            width:100%;padding:15px 18px;background:var(--glass);border:1px solid var(--border);
+            border-radius:14px;color:var(--white);font-size:15px;font-weight:500;font-family:inherit;
+            outline:none;transition:all .3s;
+        }
+        .form-group input::placeholder{color:rgba(123,132,168,.6)}
+        .form-group input:focus{border-color:var(--primary);background:rgba(108,92,231,.05);box-shadow:0 0 20px rgba(108,92,231,.1)}
+
+        /* Buttons */
+        .btn-primary{
+            width:100%;padding:16px;background:linear-gradient(135deg,var(--primary),#8B5CF6);
+            color:#fff;border:none;border-radius:14px;font-size:15px;font-weight:700;
+            cursor:pointer;font-family:inherit;transition:all .3s;
+            box-shadow:0 8px 32px rgba(108,92,231,.3);
+        }
+        .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 40px rgba(108,92,231,.4)}
+        .btn-primary:active{transform:translateY(0)}
+        .btn-primary:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+        .btn-google{
+            width:100%;padding:14px;background:var(--glass);color:var(--white);
+            border:1px solid var(--border);border-radius:14px;font-size:14px;font-weight:600;
+            cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;
+            gap:10px;transition:all .3s;
+        }
+        .btn-google:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.15)}
+
+        /* Divider */
+        .divider{display:flex;align-items:center;gap:14px;margin:22px 0}
+        .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+        .divider span{font-size:12px;color:var(--gray);font-weight:600;text-transform:uppercase;letter-spacing:1px}
+
+        /* Footer */
+        .auth-footer{text-align:center;margin-top:22px;font-size:13px;color:var(--gray)}
+        .auth-footer a{color:var(--primary-light);font-weight:600;text-decoration:none;cursor:pointer;transition:color .3s}
+        .auth-footer a:hover{color:var(--accent)}
+
+        /* Back link */
+        .back-link{position:fixed;top:24px;left:24px;z-index:10;display:flex;align-items:center;gap:8px;color:var(--gray);text-decoration:none;font-size:14px;font-weight:500;transition:color .3s}
+        .back-link:hover{color:var(--white)}
+
+        /* Responsive */
+        @media(max-width:480px){
+            .auth-card{padding:36px 24px;border-radius:24px}
+            .auth-logo h1{font-size:24px}
+            .back-link{top:16px;left:16px}
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-mesh"><div class="orb"></div><div class="orb"></div><div class="orb"></div></div>
+    <div class="grid-overlay"></div>
+
+    <a href="/" class="back-link"><i class="fas fa-arrow-left"></i> Back to Home</a>
+
+    <div class="auth-wrapper">
+        <div class="auth-card">
+            <div class="auth-logo">
+                <div class="logo-icon"><i class="fas fa-shield-halved"></i></div>
+                <h1>Parental Control</h1>
+                <p>Secure family monitoring dashboard</p>
+            </div>
+
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('login')">Login</div>
+                <div class="tab" onclick="switchTab('register')">Register</div>
+            </div>
+
+            <div id="errorMsg" class="error-msg"></div>
+            <div id="successMsg" class="success-msg"></div>
+
+            <!-- Login Form -->
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="loginEmail" placeholder="your@email.com" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="loginPassword" placeholder="Enter password" required>
+                </div>
+                <button type="submit" class="btn-primary" id="loginBtn">Login</button>
+                
+                <div class="divider"><span>OR</span></div>
+                
+                <button type="button" class="btn-google" onclick="googleLogin()">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.797 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/>
+                        <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" fill="#34A853"/>
+                        <path d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9s.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+                        <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+                    </svg>
+                    Continue with Google
+                </button>
+                
+                <div class="auth-footer">
+                    <a onclick="showForgotPassword()">Forgot password?</a>
+                </div>
+            </form>
+
+            <!-- Register Form -->
+            <form id="registerForm" onsubmit="handleRegister(event)" style="display:none;">
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" id="regName" placeholder="Your name" required>
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="regEmail" placeholder="your@email.com" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="regPassword" placeholder="Min 8 characters" required minlength="8">
+                </div>
+                <button type="submit" class="btn-primary" id="regBtn">Create Account</button>
+            </form>
+
+            <!-- Forgot Password -->
+            <form id="forgotForm" onsubmit="handleForgotPassword(event)" style="display:none;">
+                <div class="form-group">
+                    <label>Registered Email</label>
+                    <input type="email" id="forgotEmail" placeholder="your@email.com" required>
+                </div>
+                <button type="submit" class="btn-primary" id="sendOtpBtn">Send OTP</button>
+                <div class="auth-footer">
+                    <a onclick="switchTab('login')">Back to login</a>
+                </div>
+            </form>
+
+            <!-- Reset Password -->
+            <form id="resetForm" onsubmit="handleResetPassword(event)" style="display:none;">
+                <div class="form-group">
+                    <label>OTP</label>
+                    <input type="text" id="resetOtp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit OTP" required>
+                </div>
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" id="resetNewPassword" minlength="8" placeholder="Minimum 8 characters" required>
+                </div>
+                <button type="submit" class="btn-primary" id="resetBtn">Reset Password</button>
+                <div class="auth-footer">
+                    <a onclick="showForgotPassword()">Send OTP again</a> · <a onclick="switchTab('login')">Back to login</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+
+        function googleLogin() {
+            const clientId = '822719462819-k5u58rfmv0kgl9svum7l47ntopkqvu0u.apps.googleusercontent.com';
+            const redirectUri = window.location.origin + '/auth/google/callback';
+            const nonce = crypto.getRandomValues(new Uint8Array(16)).reduce((s, b) => s + b.toString(16).padStart(2, '0'), '');
+            sessionStorage.setItem('google_oauth_nonce', nonce);
+            const params = new URLSearchParams({
+                client_id: clientId, redirect_uri: redirectUri,
+                response_type: 'token id_token', scope: 'openid email profile',
+                prompt: 'select_account', include_granted_scopes: 'true', nonce: nonce,
+            });
+            window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+        }
+
+        (function handleGoogleCallback() {
+            const hash = window.location.hash;
+            if (!hash || !hash.includes('id_token')) return;
+            const params = new URLSearchParams(hash.substring(1));
+            const idToken = params.get('id_token');
+            if (!idToken) return;
+            history.replaceState(null, null, window.location.pathname);
+            try {
+                const data = JSON.parse(atob(idToken.split('.')[1]));
+                fetch(`${API_BASE}/api/auth/google`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: idToken, email: data.email, name: data.name || data.email.split('@')[0], picture: data.picture }),
+                })
+                .then(res => res.json())
+                .then(result => {
+                    if (result.error) throw new Error(result.error);
+                    localStorage.setItem('access_token', result.accessToken);
+                    localStorage.setItem('refresh_token', result.refreshToken);
+                    localStorage.setItem('user', JSON.stringify(result.user));
+                    window.location.href = '/dashboard';
+                })
+                .catch(err => showError(err.message || 'Google login failed'));
+            } catch (err) { showError('Google login failed'); }
+        })();
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('registerForm').style.display = 'none';
+            document.getElementById('forgotForm').style.display = 'none';
+            document.getElementById('resetForm').style.display = 'none';
+            hideMessages();
+            if (tab === 'login') {
+                document.querySelectorAll('.tab')[0].classList.add('active');
+                document.getElementById('loginForm').style.display = 'block';
+            } else if (tab === 'register') {
+                document.querySelectorAll('.tab')[1].classList.add('active');
+                document.getElementById('registerForm').style.display = 'block';
+            }
+        }
+
+        function showForgotPassword() {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('loginForm').style.display = 'none';
+            document.getElementById('registerForm').style.display = 'none';
+            document.getElementById('forgotForm').style.display = 'block';
+            document.getElementById('resetForm').style.display = 'none';
+            hideMessages();
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('errorMsg');
+            el.textContent = msg; el.style.display = 'block';
+            document.getElementById('successMsg').style.display = 'none';
+        }
+        function showSuccess(msg) {
+            const el = document.getElementById('successMsg');
+            el.textContent = msg; el.style.display = 'block';
+            document.getElementById('errorMsg').style.display = 'none';
+        }
+        function hideMessages() {
+            document.getElementById('errorMsg').style.display = 'none';
+            document.getElementById('successMsg').style.display = 'none';
+        }
+
+        function getToken() { return localStorage.getItem('access_token'); }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const btn = document.getElementById('loginBtn');
+            btn.disabled = true; btn.textContent = 'Logging in...';
+            hideMessages();
+            try {
+                const res = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: document.getElementById('loginEmail').value, password: document.getElementById('loginPassword').value }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Login failed');
+                localStorage.setItem('access_token', data.accessToken);
+                localStorage.setItem('refresh_token', data.refreshToken);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                window.location.href = '/dashboard';
+            } catch (err) {
+                showError(err.message);
+                btn.disabled = false; btn.textContent = 'Login';
+            }
+        }
+
+        async function handleRegister(e) {
+            e.preventDefault();
+            const btn = document.getElementById('regBtn');
+            btn.disabled = true; btn.textContent = 'Creating account...';
+            hideMessages();
+            try {
+                const res = await fetch(`${API_BASE}/api/auth/register`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: document.getElementById('regName').value,
+                        email: document.getElementById('regEmail').value,
+                        password: document.getElementById('regPassword').value,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Registration failed');
+                showSuccess('Account created! Please login.');
+                setTimeout(() => switchTab('login'), 1500);
+            } catch (err) {
+                showError(err.message);
+                btn.disabled = false; btn.textContent = 'Create Account';
+            }
+        }
+
+        async function handleForgotPassword(e) {
+            e.preventDefault();
+            const btn = document.getElementById('sendOtpBtn');
+            btn.disabled = true; btn.textContent = 'Sending OTP...';
+            hideMessages();
+            try {
+                const res = await fetch(`${API_BASE}/api/auth/forgot-password`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: document.getElementById('forgotEmail').value }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to send OTP');
+                showSuccess('OTP sent to your email!');
+                document.getElementById('loginForm').style.display = 'none';
+                document.getElementById('forgotForm').style.display = 'none';
+                document.getElementById('resetForm').style.display = 'block';
+            } catch (err) {
+                showError(err.message);
+                btn.disabled = false; btn.textContent = 'Send OTP';
+            }
+        }
+
+        async function handleResetPassword(e) {
+            e.preventDefault();
+            const btn = document.getElementById('resetBtn');
+            btn.disabled = true; btn.textContent = 'Resetting...';
+            hideMessages();
+            try {
+                const res = await fetch(`${API_BASE}/api/auth/reset-password`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        otp: document.getElementById('resetOtp').value,
+                        email: document.getElementById('forgotEmail').value,
+                        newPassword: document.getElementById('resetNewPassword').value,
+                    }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Reset failed');
+                showSuccess('Password reset successful! Please login.');
+                setTimeout(() => switchTab('login'), 2000);
+            } catch (err) {
+                showError(err.message);
+                btn.disabled = false; btn.textContent = 'Reset Password';
+            }
+        }
+    </script>
+</body>
+</html>
