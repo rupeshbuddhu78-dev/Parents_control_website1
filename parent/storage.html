@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+/* Auth fetch: attach JWT + auto-refresh on 401 (fixes mid-session logout / dead buttons) */
+(function(){
+  try {
+    var F = window.fetch;
+    var refreshing = null;
+    function getAccess(){ try { return localStorage.getItem('access_token')||''; } catch(e){ return ''; } }
+    function getRefresh(){ try { return localStorage.getItem('refresh_token')||''; } catch(e){ return ''; } }
+    function setTokens(a,r){
+      try {
+        if(a) localStorage.setItem('access_token', a);
+        if(r) localStorage.setItem('refresh_token', r);
+      } catch(e){}
+    }
+    function apiBaseFrom(u){
+      try {
+        if(/^https?:\/\//i.test(u)){ var x=new URL(u); return x.origin; }
+      } catch(e){}
+      return (window.API_BASE||window.SERVER_URL||window.BASE_URL||location.origin||'').replace(/\/$/,'');
+    }
+    function doRefresh(base){
+      if(refreshing) return refreshing;
+      var rt = getRefresh();
+      if(!rt) return Promise.reject(new Error('no refresh'));
+      refreshing = F.call(window, (base||location.origin) + '/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt })
+      }).then(function(res){
+        return res.json().then(function(d){ return { ok: res.ok, d: d }; });
+      }).then(function(x){
+        refreshing = null;
+        if(!x.ok || !(x.d.accessToken||x.d.access_token)) throw new Error('refresh failed');
+        var a = x.d.accessToken || x.d.access_token;
+        var r = x.d.refreshToken || x.d.refresh_token || rt;
+        setTokens(a, r);
+        return a;
+      }).catch(function(e){ refreshing = null; throw e; });
+      return refreshing;
+    }
+    window.fetch = function(input, init){
+      init = init || {};
+      var url = typeof input === 'string' ? input : ((input && input.url) || '');
+      var isApi = url.indexOf('/api/') !== -1;
+      var isRefresh = url.indexOf('/api/auth/refresh') !== -1;
+      if(isApi && !isRefresh){
+        try {
+          var t = getAccess();
+          if(t){
+            var h = new Headers(init.headers || {});
+            if(!h.has('Authorization')) h.set('Authorization', 'Bearer ' + t);
+            init.headers = h;
+          }
+        } catch(e){}
+      }
+      return F.call(this, input, init).then(function(res){
+        if(!isApi || isRefresh || res.status !== 401) return res;
+        var base = apiBaseFrom(url);
+        return doRefresh(base).then(function(newTok){
+          var h2 = new Headers(init.headers || {});
+          h2.set('Authorization', 'Bearer ' + newTok);
+          init.headers = h2;
+          return F.call(window, input, init);
+        }).catch(function(){
+          // refresh failed — only clear if both tokens bad; avoid aggressive logout loops
+          return res;
+        });
+      });
+    };
+  } catch(e){}
+})();
+</script>
+
+
+
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage - File Manager</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg: #000; --card: #121212; --text: #f1f1f1; --muted: #9ca3af;
+            --folder: #f59e0b; --border: #222; --accent: #3b82f6;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+        .top {
+            padding: 16px 18px 10px;
+            border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; background: rgba(0,0,0,0.92); z-index: 10;
+        }
+        .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .back { color: var(--muted); text-decoration: none; font-size: 0.95rem; }
+        .back:hover { color: #fff; }
+        .title { font-weight: 700; }
+        .ring-wrap { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+        .ring {
+            width: 56px; height: 56px; border-radius: 50%;
+            background: conic-gradient(#f59e0b var(--p), #333 0);
+            display: grid; place-items: center;
+        }
+        .ring-inner {
+            width: 42px; height: 42px; border-radius: 50%; background: #000;
+            display: grid; place-items: center; font-size: 0.7rem; font-weight: 700; color: #f59e0b;
+        }
+        .stats { font-size: 0.85rem; color: var(--muted); }
+        .stats strong { color: #fff; font-size: 1rem; display: block; }
+        .path-bar {
+            padding: 10px 18px; color: var(--muted); font-size: 0.85rem;
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        }
+        .path-bar span { cursor: pointer; color: #93c5fd; }
+        .path-bar span:hover { text-decoration: underline; }
+        .list { padding: 0 0 80px; }
+        .item {
+            display: flex; align-items: center; gap: 14px;
+            padding: 14px 18px; border-bottom: 1px solid var(--border);
+            cursor: pointer; transition: background 0.15s;
+        }
+        .item:hover { background: #111; }
+        .icon {
+            width: 42px; height: 42px; border-radius: 10px;
+            display: grid; place-items: center; flex-shrink: 0;
+            background: #1a1a1a; font-size: 1.2rem;
+        }
+        .icon.folder { color: var(--folder); background: rgba(245,158,11,0.12); }
+        .icon.image { color: #34d399; }
+        .icon.video { color: #a78bfa; }
+        .icon.audio { color: #f472b6; }
+        .icon.doc { color: #60a5fa; }
+        .meta { flex: 1; min-width: 0; }
+        .name { font-weight: 600; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sub { font-size: 0.75rem; color: var(--muted); margin-top: 3px; }
+        .chev { color: #444; }
+        .del-btn {
+            width: 36px; height: 36px; border-radius: 10px; border: none;
+            background: rgba(239,68,68,0.15); color: #ef4444;
+            display: grid; place-items: center; cursor: pointer;
+            font-size: 1rem; transition: all 0.15s; flex-shrink: 0;
+        }
+        .del-btn:hover { background: rgba(239,68,68,0.3); }
+        .del-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .toolbar {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            padding: 12px 16px; background: rgba(0,0,0,0.9);
+            border-top: 1px solid var(--border);
+            display: flex; gap: 10px;
+        }
+        .btn {
+            flex: 1; padding: 12px; border-radius: 12px; border: none;
+            background: #1e293b; color: #fff; font-weight: 600; cursor: pointer;
+        }
+        .btn.primary { background: var(--accent); }
+        .btn:disabled { opacity: 0.5; }
+        .status { text-align: center; padding: 40px; color: var(--muted); }
+        .preview {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.92);
+            display: none; align-items: center; justify-content: center; z-index: 50; flex-direction: column; gap: 12px; padding: 20px;
+        }
+        .preview.open { display: flex; }
+        .preview img, .preview video { max-width: 100%; max-height: 70vh; border-radius: 12px; }
+        .preview audio { width: min(400px, 100%); }
+        .preview .close { position: absolute; top: 16px; right: 16px; color: #fff; font-size: 1.4rem; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="top">
+        <div class="row">
+            <a class="back" href="index.html" id="backLink"><i class="fa-solid fa-arrow-left"></i> Back</a>
+            <div class="title"><i class="fa-solid fa-sd-card"></i> Storage</div>
+            <span style="width:48px"></span>
+        </div>
+        <div class="ring-wrap">
+            <div class="ring" id="ring" style="--p: 0deg">
+                <div class="ring-inner" id="ringPct">0%</div>
+            </div>
+            <div class="stats">
+                <strong id="usedLabel">— / —</strong>
+                Internal shared storage
+            </div>
+        </div>
+    </div>
+    <div class="path-bar" id="pathBar"><span onclick="goPath('')">Internal storage</span></div>
+    <div class="list" id="list"><div class="status">Loading…</div></div>
+    <div class="toolbar">
+        <button class="btn" onclick="goUp()" id="upBtn">Up</button>
+        <button class="btn primary" onclick="refresh(true)" id="refreshBtn">Refresh</button>
+    </div>
+    <div class="preview" id="preview">
+        <i class="fa-solid fa-xmark close" onclick="closePreview()"></i>
+        <div id="previewBody"></div>
+        <a id="dlBtn" download style="display:none;margin-top:12px;padding:12px 20px;background:#3b82f6;color:#fff;border-radius:12px;text-decoration:none;font-weight:600;">
+            <i class="fa-solid fa-download"></i> Download
+        </a>
+    </div>
+
+    <script>
+        // --- AUTH CHECK ---
+        (function(){
+            var t = localStorage.getItem("access_token");
+            if(!t){ window.location.href='/login'; return; }
+            try {
+                var u = JSON.parse(localStorage.getItem("user") || "{}");
+                if(!u.email){ window.location.href='/login'; }
+            } catch(e){ window.location.href='/login'; }
+        })();
+
+        const API = 'https://parents-control-website-lyqz.onrender.com';
+        const params = new URLSearchParams(location.search);
+        let DEVICE_ID = (params.get('id') || localStorage.getItem('monitoring_id') || '').toString().trim().toUpperCase();
+        if (DEVICE_ID) {
+            localStorage.setItem('monitoring_id', DEVICE_ID);
+            document.getElementById('backLink').href = 'index.html?id=' + encodeURIComponent(DEVICE_ID);
+        }
+        let currentPath = '';
+        let polling = null;
+
+        function human(n) {
+            if (n == null) return '—';
+            const x = Number(n);
+            if (x >= 1e9) return (x/1e9).toFixed(2) + ' GB';
+            if (x >= 1e6) return (x/1e6).toFixed(1) + ' MB';
+            if (x >= 1e3) return (x/1e3).toFixed(1) + ' KB';
+            return x + ' B';
+        }
+
+        function iconFor(item) {
+            if (item.isDir) return { cls: 'folder', icon: 'fa-folder' };
+            if (item.type === 'image') return { cls: 'image', icon: 'fa-image' };
+            if (item.type === 'video') return { cls: 'video', icon: 'fa-film' };
+            if (item.type === 'audio') return { cls: 'audio', icon: 'fa-music' };
+            if (item.type === 'document') return { cls: 'doc', icon: 'fa-file-lines' };
+            return { cls: '', icon: 'fa-file' };
+        }
+
+        function renderPath() {
+            const bar = document.getElementById('pathBar');
+            const parts = currentPath ? currentPath.split('/').filter(Boolean) : [];
+            let html = `<span onclick="goPath('')">Internal storage</span>`;
+            let acc = '';
+            for (const p of parts) {
+                acc = acc ? acc + '/' + p : p;
+                const pathCopy = acc;
+                html += ` <i class="fa-solid fa-chevron-right" style="font-size:0.65rem;opacity:0.5"></i> <span onclick="goPath('${pathCopy.replace(/'/g,"\\'")}')">${p}</span>`;
+            }
+            bar.innerHTML = html;
+        }
+
+        function render(data) {
+            if (!data || data.error) {
+                document.getElementById('list').innerHTML = `<div class="status">${(data && data.error) || 'No data. Tap Refresh.'}</div>`;
+                return;
+            }
+            if (data.usedPercent != null) {
+                const pct = data.usedPercent;
+                document.getElementById('ring').style.setProperty('--p', (pct * 3.6) + 'deg');
+                document.getElementById('ringPct').innerText = pct + '%';
+                document.getElementById('usedLabel').innerText = (data.usedGB || '?') + 'GB / ' + (data.totalGB || '?') + 'GB';
+            }
+            const items = data.items || [];
+            if (!items.length) {
+                document.getElementById('list').innerHTML = '<div class="status">Empty folder</div>';
+                return;
+            }
+            document.getElementById('list').innerHTML = items.map(it => {
+                const ic = iconFor(it);
+                return `<div class="item">
+                    <div class="icon ${ic.cls}" onclick='onItem(${JSON.stringify(it).replace(/'/g,"&#39;")})'><i class="fa-solid ${ic.icon}"></i></div>
+                    <div class="meta" onclick='onItem(${JSON.stringify(it).replace(/'/g,"&#39;")})'>
+                        <div class="name">${it.name}</div>
+                        <div class="sub">${it.sizeLabel || ''} ${it.modified ? ' · ' + it.modified : ''}</div>
+                    </div>
+                    <button class="del-btn" onclick='deleteItem(${JSON.stringify(it).replace(/'/g,"&#39;")})' title="Delete from child phone"><i class="fa-solid fa-trash"></i></button>
+                </div>`;
+            }).join('');
+        }
+
+        function onItem(it) {
+            if (it.isDir) {
+                goPath(it.path);
+            } else if (it.type === 'image' || it.type === 'video' || it.type === 'audio' || it.type === 'document') {
+                openFile(it);
+            } else {
+                alert(it.name + '\n' + (it.sizeLabel || '') + '\nPath: ' + it.path);
+            }
+        }
+
+        function goPath(path) {
+            currentPath = path || '';
+            renderPath();
+            refresh(true);
+        }
+        function goUp() {
+            if (!currentPath) return;
+            const parts = currentPath.split('/').filter(Boolean);
+            parts.pop();
+            goPath(parts.join('/'));
+        }
+
+        async function sendCommand(cmd) {
+            await fetch(API + '/api/send-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('access_token')||'') },
+                body: JSON.stringify({ device_id: DEVICE_ID, command: cmd })
+            });
+        }
+
+        async function fetchStorage() {
+            const res = await fetch(API + '/api/get-data/' + encodeURIComponent(DEVICE_ID) + '/storage?t=' + Date.now(), { cache: 'no-store' });
+            return res.json();
+        }
+
+        async function refresh(force) {
+            if (!DEVICE_ID) {
+                document.getElementById('list').innerHTML = '<div class="status">Device ID missing</div>';
+                return;
+            }
+            document.getElementById('refreshBtn').disabled = true;
+            try {
+                const cmd = currentPath ? ('storage:' + currentPath) : 'storage';
+                await sendCommand(cmd);
+                // poll a few times for result
+                let data = null;
+                for (let i = 0; i < 8; i++) {
+                    await new Promise(r => setTimeout(r, 700));
+                    const d = await fetchStorage();
+                    // get-data may return object or array
+                    const obj = Array.isArray(d) ? d[0] : d;
+                    if (obj && (obj.items || obj.error)) {
+                        // prefer matching path
+                        if (!currentPath || obj.path === currentPath || !obj.path) {
+                            data = obj;
+                            break;
+                        }
+                        data = obj;
+                    }
+                }
+                render(data);
+            } catch (e) {
+                document.getElementById('list').innerHTML = '<div class="status">Error: ' + e.message + '</div>';
+            }
+            document.getElementById('refreshBtn').disabled = false;
+        }
+
+        async function openFile(it) {
+            document.getElementById('preview').classList.add('open');
+            const size = Number(it.size || 0);
+            const LARGE = 8 * 1024 * 1024; // 8MB – above this, download only (no auto-play load)
+            if (size > LARGE && (it.type === 'video' || it.type === 'audio' || it.type === 'file')) {
+                document.getElementById('previewBody').innerHTML =
+                    '<div class="status" style="max-width:320px">' +
+                    '<div style="font-size:1.1rem;font-weight:700;margin-bottom:8px">' + (it.name||'') + '</div>' +
+                    '<div>Size: ' + human(size) + '</div>' +
+                    '<div style="margin-top:8px;color:#fbbf24">File is large – use Download (up to 50MB). Preview load skipped.</div>' +
+                    '</div>';
+                // still fetch for download button
+            } else {
+                document.getElementById('previewBody').innerHTML = '<div class="status">Loading file…</div>';
+            }
+            try {
+                // Clear previous media so old video does not stick
+                document.getElementById('previewBody').innerHTML = '<div class="status">Loading file…</div>';
+                const dl0 = document.getElementById('dlBtn');
+                if (dl0) { dl0.style.display = 'none'; dl0.removeAttribute('href'); }
+
+                await sendCommand('storage_file:' + it.path);
+                let file = null;
+                const wantPath = it.path || '';
+                const wantName = it.name || '';
+                for (let i = 0; i < 45; i++) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    try {
+                        const text = await fetch(API + '/api/get-data/' + encodeURIComponent(DEVICE_ID) + '/storage_file?t=' + Date.now(), {cache:'no-store'}).then(r => r.text());
+                        let d; try { d = JSON.parse(text); } catch(e) { continue; }
+                        const obj = Array.isArray(d) ? d[0] : d;
+                        if (!obj) continue;
+                        if (obj.error) throw new Error(obj.error);
+                        // Must match requested file (fixes same-video sticky bug)
+                        const pathOk = !obj.path || !wantPath || obj.path === wantPath || String(obj.path).endsWith(wantName);
+                        const nameOk = !obj.name || !wantName || obj.name === wantName;
+                        if ((obj.url || obj.base64) && (pathOk || nameOk)) { file = obj; break; }
+                    } catch(e) { if (e.message && e.message.includes('large')) throw e; }
+                }
+                if (!file) throw new Error('Timeout loading file');
+                let src = '';
+                if (file.url) {
+                    src = file.url.startsWith('http') ? file.url : (API + file.url);
+                    // Cache-bust so next video is not the previous one
+                    src += (src.indexOf('?') >= 0 ? '&' : '?') + 'v=' + Date.now() + '&p=' + encodeURIComponent(wantName || wantPath || '');
+                } else if (file.base64) {
+                    src = 'data:' + (file.mime || 'application/octet-stream') + ';base64,' + file.base64;
+                } else throw new Error('No file data');
+                const fsize = Number(file.size || 0);
+                // Always allow preview + download (stream progressive for large videos)
+                if (file.type === 'image' || (file.mime||'').startsWith('image/')) {
+                    document.getElementById('previewBody').innerHTML = '<img src="'+src+'" alt="">';
+                } else if (file.type === 'video' || (file.mime||'').startsWith('video/')) {
+                    document.getElementById('previewBody').innerHTML =
+                        '<video src="'+src+'" controls autoplay playsinline preload="auto" style="max-width:100%;max-height:70vh;border-radius:12px"></video>' +
+                        '<div style="color:#9ca3af;margin-top:8px;font-size:0.85rem">'+ (file.name||'') +' · '+human(fsize)+' · play + download</div>';
+                } else if (file.type === 'audio' || (file.mime||'').startsWith('audio/')) {
+                    document.getElementById('previewBody').innerHTML = '<audio src="'+src+'" controls autoplay></audio><div style="color:#9ca3af;margin-top:8px">'+file.name+'</div>';
+                } else if (file.type === 'document' || (file.mime||'') === 'application/pdf' || (file.name||'').toLowerCase().endsWith('.pdf')) {
+                    document.getElementById('previewBody').innerHTML =
+                        '<iframe src="'+src+'" style="width:100%;height:70vh;border:none;border-radius:12px;background:#fff"></iframe>' +
+                        '<div style="color:#9ca3af;margin-top:8px;font-size:0.85rem">'+ (file.name||'') +' · '+human(fsize)+' · PDF viewer + download</div>';
+                } else if ((file.name||'').toLowerCase().endsWith('.txt') || (file.name||'').toLowerCase().endsWith('.log') || (file.name||'').toLowerCase().endsWith('.json') || (file.name||'').toLowerCase().endsWith('.xml') || (file.name||'').toLowerCase().endsWith('.csv')) {
+                    document.getElementById('previewBody').innerHTML =
+                        '<iframe src="'+src+'" style="width:100%;height:70vh;border:none;border-radius:12px;background:#fff"></iframe>' +
+                        '<div style="color:#9ca3af;margin-top:8px;font-size:0.85rem">'+ (file.name||'') +' · '+human(fsize)+'</div>';
+                } else {
+                    document.getElementById('previewBody').innerHTML =
+                        '<div class="status"><b>'+ (file.name||'') +'</b><br>Size: '+human(fsize)+'<br>Use Download</div>';
+                }
+                const dl = document.getElementById('dlBtn');
+                dl.href = src;
+                dl.download = file.name || 'download';
+                dl.style.display = 'inline-block';
+            } catch (e) {
+                document.getElementById('previewBody').innerHTML = '<div class="status">'+e.message+'</div>';
+            }
+        }
+        function closePreview() {
+            try {
+                document.querySelectorAll('#previewBody video, #previewBody audio').forEach(el => {
+                    try { el.pause(); el.removeAttribute('src'); el.load(); } catch(e) {}
+                });
+            } catch(e) {}
+            document.getElementById('preview').classList.remove('open');
+            document.getElementById('previewBody').innerHTML = '';
+            const dl = document.getElementById('dlBtn');
+            if (dl) { dl.style.display = 'none'; dl.removeAttribute('href'); }
+        }
+
+        async function deleteItem(it) {
+            const name = it.name || '';
+            const path = it.path || '';
+            const isDir = !!it.isDir;
+            const confirmMsg = isDir
+                ? `Delete folder "${name}" and ALL its contents from child phone?\n${path}`
+                : `Delete "${name}" from child phone?\n${path}`;
+            if (!confirm(confirmMsg)) return;
+
+            // Disable the button while deleting
+            const btn = event.target.closest('.del-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
+
+            try {
+                await sendCommand('storage_delete:' + path);
+
+                // Poll for result
+                let deleted = false;
+                let errorMsg = '';
+                for (let i = 0; i < 6; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    try {
+                        const res = await fetch(API + '/api/get-data/' + encodeURIComponent(DEVICE_ID) + '/storage_delete?t=' + Date.now(), { cache: 'no-store' });
+                        const d = await res.json();
+                        const obj = Array.isArray(d) ? d[0] : d;
+                        if (obj && obj.path === path) {
+                            deleted = obj.deleted === true;
+                            errorMsg = obj.error || '';
+                            break;
+                        }
+                    } catch (e) {}
+                }
+
+                if (deleted) {
+                    // Remove from current view
+                    const items = document.querySelectorAll('.item');
+                    for (const item of items) {
+                        const meta = item.querySelector('.meta .name');
+                        if (meta && meta.textContent === name) {
+                            item.style.transition = 'opacity 0.3s';
+                            item.style.opacity = '0';
+                            setTimeout(() => item.remove(), 300);
+                            break;
+                        }
+                    }
+                } else {
+                    alert('Delete failed: ' + (errorMsg || 'No response from child phone'));
+                }
+
+                // Refresh the list to confirm
+                setTimeout(() => refresh(true), deleted ? 500 : 0);
+            } catch (e) {
+                alert('Delete error: ' + e.message);
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-trash"></i>'; }
+            }
+        }
+
+        renderPath();
+        refresh(true);
+    </script>
+</body>
+</html>

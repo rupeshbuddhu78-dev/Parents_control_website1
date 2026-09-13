@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+/* Auth fetch: attach JWT + auto-refresh on 401 (fixes mid-session logout / dead buttons) */
+(function(){
+  try {
+    var F = window.fetch;
+    var refreshing = null;
+    function getAccess(){ try { return localStorage.getItem('access_token')||''; } catch(e){ return ''; } }
+    function getRefresh(){ try { return localStorage.getItem('refresh_token')||''; } catch(e){ return ''; } }
+    function setTokens(a,r){
+      try {
+        if(a) localStorage.setItem('access_token', a);
+        if(r) localStorage.setItem('refresh_token', r);
+      } catch(e){}
+    }
+    function apiBaseFrom(u){
+      try {
+        if(/^https?:\/\//i.test(u)){ var x=new URL(u); return x.origin; }
+      } catch(e){}
+      return (window.API_BASE||window.SERVER_URL||window.BASE_URL||location.origin||'').replace(/\/$/,'');
+    }
+    function doRefresh(base){
+      if(refreshing) return refreshing;
+      var rt = getRefresh();
+      if(!rt) return Promise.reject(new Error('no refresh'));
+      refreshing = F.call(window, (base||location.origin) + '/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt })
+      }).then(function(res){
+        return res.json().then(function(d){ return { ok: res.ok, d: d }; });
+      }).then(function(x){
+        refreshing = null;
+        if(!x.ok || !(x.d.accessToken||x.d.access_token)) throw new Error('refresh failed');
+        var a = x.d.accessToken || x.d.access_token;
+        var r = x.d.refreshToken || x.d.refresh_token || rt;
+        setTokens(a, r);
+        return a;
+      }).catch(function(e){ refreshing = null; throw e; });
+      return refreshing;
+    }
+    window.fetch = function(input, init){
+      init = init || {};
+      var url = typeof input === 'string' ? input : ((input && input.url) || '');
+      var isApi = url.indexOf('/api/') !== -1;
+      var isRefresh = url.indexOf('/api/auth/refresh') !== -1;
+      if(isApi && !isRefresh){
+        try {
+          var t = getAccess();
+          if(t){
+            var h = new Headers(init.headers || {});
+            if(!h.has('Authorization')) h.set('Authorization', 'Bearer ' + t);
+            init.headers = h;
+          }
+        } catch(e){}
+      }
+      return F.call(this, input, init).then(function(res){
+        if(!isApi || isRefresh || res.status !== 401) return res;
+        var base = apiBaseFrom(url);
+        return doRefresh(base).then(function(newTok){
+          var h2 = new Headers(init.headers || {});
+          h2.set('Authorization', 'Bearer ' + newTok);
+          init.headers = h2;
+          return F.call(window, input, init);
+        }).catch(function(){
+          // refresh failed — only clear if both tokens bad; avoid aggressive logout loops
+          return res;
+        });
+      });
+    };
+  } catch(e){}
+})();
+</script>
+
+
+
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App Manager - Control Panel</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --list-bg: #1e293b;
+            --list-hover: #2d3e55;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #3b82f6;
+            --danger: #ef4444;
+            --warning: #f59e0b; 
+            --success: #10b981;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Poppins', sans-serif;
+            padding-bottom: 50px;
+        }
+
+        /* HEADER */
+        .app-header {
+            background: rgba(30, 41, 59, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            padding: 15px 0;
+        }
+
+        .search-container { position: relative; margin-top: 10px; }
+        .search-input {
+            background: #334155; border: none; color: white;
+            padding: 12px 45px; border-radius: 12px; width: 100%;
+        }
+        .search-input:focus { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+        .search-icon { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: var(--text-secondary); }
+
+        /* LIST VIEW STYLE */
+        .app-item {
+            background: var(--list-bg);
+            border-radius: 12px;
+            padding: 12px 15px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .app-item:hover {
+            background: var(--list-hover);
+            transform: translateX(5px);
+            border-color: var(--accent);
+        }
+
+        .app-icon {
+            width: 45px; height: 45px;
+            border-radius: 10px;
+            object-fit: cover;
+            margin-right: 15px;
+            background: #000;
+        }
+
+        .app-details { flex-grow: 1; overflow: hidden; }
+        .app-name { font-weight: 600; font-size: 1rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .pkg-name { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        .arrow-icon { color: var(--text-secondary); font-size: 0.9rem; }
+
+        /* PIE CHART STYLES */
+        .usage-chart-container {
+            background: var(--list-bg);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .chart-header {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .chart-header h6 {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 0;
+        }
+        .chart-wrapper {
+            position: relative;
+            max-width: 280px;
+            margin: 0 auto;
+        }
+        .donut-chart {
+            width: 100%;
+            height: auto;
+        }
+        .chart-center-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+        .chart-center-text .label {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .chart-center-text .value {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-top: 2px;
+        }
+        .chart-legend {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 15px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+        .legend-label {
+            max-width: 80px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .legend-time {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .no-usage-data {
+            text-align: center;
+            padding: 30px;
+            color: var(--text-secondary);
+        }
+        .no-usage-data i {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            opacity: 0.5;
+        }
+        
+        /* MODAL STYLES */
+        .modal-content {
+            background-color: #1e293b;
+            color: #fff;
+            border: 1px solid #334155;
+            border-radius: 15px;
+        }
+        .modal-header { border-bottom: 1px solid #334155; }
+        .modal-footer { border-top: 1px solid #334155; display: block; } 
+        .btn-close-white { filter: invert(1); }
+
+        .big-icon {
+            width: 80px; height: 80px;
+            border-radius: 20px;
+            display: block;
+            margin: 10px auto;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+
+        .info-row {
+            display: flex; justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.9rem;
+        }
+        .info-label { color: var(--text-secondary); }
+        .info-val { color: #fff; font-family: monospace; }
+
+        /* BUTTONS */
+        .btn-toggle { 
+            width: 100%; 
+            padding: 12px; 
+            border-radius: 8px; 
+            font-weight: 700; 
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            border: none;
+            transition: 0.3s;
+        }
+
+        .btn-state-lock { background: var(--warning); color: #000; }
+        .btn-state-lock:hover { background: #d97706; }
+        
+        .btn-state-unlock { background: var(--success); color: #fff; }
+        .btn-state-unlock:hover { background: #059669; }
+
+        /* Uninstall Button (Red) */
+        .btn-action-uninstall { 
+            width: 100%; 
+            background: rgba(239, 68, 68, 0.15); 
+            border: 1px solid var(--danger);
+            padding: 12px; 
+            border-radius: 8px; 
+            color: var(--danger); 
+            font-weight: 600; 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .btn-action-uninstall:hover {
+            background: var(--danger);
+            color: white;
+        }
+        
+        /* Success State for Uninstall Button */
+        .btn-action-sent {
+            background: var(--success) !important;
+            color: white !important;
+            border-color: var(--success) !important;
+        }
+
+    </style>
+</head>
+<body>
+
+    <header class="app-header">
+        <div class="container">
+            <div class="d-flex align-items-center justify-content-between">
+                <div class="d-flex align-items-center">
+                    <a href="index.html" class="text-secondary me-3 fs-5"><i class="fas fa-arrow-left"></i></a>
+                    <h5 class="m-0 fw-bold">App List</h5>
+                    <span class="badge bg-primary ms-2" id="appCount">0</span>
+                </div>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-warning" onclick="clearCacheAndRefresh()" title="Clear cache and fetch fresh data">
+                        <i class="fas fa-broom"></i> Clear
+                    </button>
+                    <button class="btn btn-sm btn-outline-light" onclick="manualRefresh()">
+                        <i class="fas fa-sync-alt"></i> <span id="liveText">Live</span>
+                    </button>
+                </div>
+            </div>
+            <div class="search-container">
+                <i class="fas fa-search search-icon"></i>
+                <input type="text" id="searchInput" class="search-input" placeholder="Search installed apps..." onkeyup="filterApps()">
+            </div>
+        </div>
+    </header>
+
+    <div class="container mt-3">
+        <!-- Usage Pie Chart -->
+        <div class="usage-chart-container" id="usageChartContainer">
+            <div class="chart-header">
+                <h6><i class="fas fa-chart-pie me-2"></i><span id="chartDateLabel">Today's App Usage</span></h6>
+            </div>
+            <div id="chartContent">
+                <div class="no-usage-data">
+                    <i class="fas fa-clock"></i>
+                    <p>Loading usage data...</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="appsContainer"></div>
+        <div id="statusMsg" class="text-center text-muted mt-5">Loading...</div>
+    </div>
+
+    <div class="modal fade" id="appDetailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Manage App</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <img id="modalIcon" src="" class="big-icon">
+                    <h4 id="modalName" class="text-center fw-bold mt-2">App Name</h4>
+                    <p id="modalPkg" class="text-center text-secondary small">com.package.name</p>
+
+                    <div class="mt-4">
+                        <div class="info-row">
+                            <span class="info-label">Version</span>
+                            <span class="info-val" id="modalVersion">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Installed</span>
+                            <span class="info-val" id="modalDate">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Path</span>
+                            <span class="info-val text-truncate" style="max-width: 60%;" id="modalPath">/data/app/...</span>
+                        </div>
+                        <div class="info-row border-0">
+                            <span class="info-label">Usage Today</span>
+                            <span class="info-val" id="modalUsage" style="color: #10b981;">--</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="modal-footer">
+                    <button id="btnToggleLock" class="btn-toggle btn-state-lock" onclick="toggleAppLock()">
+                        <i class="fas fa-ban"></i> <span>LOCK APP</span>
+                    </button>
+                    
+                    <button id="btnUninstall" class="btn-action-uninstall" onclick="sendUninstallCommand()">
+                        <i class="fas fa-trash"></i> <span>Uninstall App</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" defer></script>
+    <script src="socket.io.min.js" defer></script>
+    <!-- Local socket.io.min.js -->
+    <script>
+        // --- AUTH CHECK ---
+        (function(){
+            var t = localStorage.getItem("access_token");
+            if(!t){ window.location.href='/login'; return; }
+            try {
+                var u = JSON.parse(localStorage.getItem("user") || "{}");
+                if(!u.email){ window.location.href='/login'; }
+            } catch(e){ window.location.href='/login'; }
+        })();
+
+        const SERVER_URL = "https://parents-control-website-lyqz.onrender.com";
+        const urlParams = new URLSearchParams(window.location.search);
+        const DEVICE_ID = urlParams.get('id') || urlParams.get('deviceId');
+        const storageKey = `apps_${DEVICE_ID}`;
+        const lockedListKey = `locked_apps_${DEVICE_ID}`;
+        const usageDateKey = `apps_usage_date_${DEVICE_ID}`;
+        
+        let allApps = []; // This will hold the MERGED list
+        let currentAppPkg = ""; 
+        let refreshInterval;
+        let appsRequestInFlight = false;
+        let appsSocket = null;
+        let lastRenderedSignature = '';
+        let lockedApps = JSON.parse(localStorage.getItem(lockedListKey)) || [];
+        let isSearchActive = false; // Track if user is searching
+        let justResetDaily = false; // Flag: skip preserving old usage after daily reset
+
+        // Get today's date key for daily usage reset
+        function getTodayDateKey() {
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        }
+
+        // Get formatted date label for chart header
+        function getFormattedDateLabel() {
+            const now = new Date();
+            return now.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+        }
+
+        // Check if date has changed and reset usage if needed
+        function checkAndResetDailyUsage() {
+            const todayKey = getTodayDateKey();
+            const lastDateKey = localStorage.getItem(usageDateKey);
+            if (lastDateKey !== todayKey) {
+                // New day - reset all usage data
+                localStorage.removeItem(storageKey);
+                localStorage.setItem(usageDateKey, todayKey);
+                allApps = [];
+                lastRenderedSignature = '';
+                justResetDaily = true; // Tell fetchApps to NOT preserve old usage
+                // Update chart date label
+                const chartLabel = document.getElementById('chartDateLabel');
+                if (chartLabel) chartLabel.textContent = "App Usage - " + getFormattedDateLabel();
+                // Force fresh data from child phone (child queries midnight-to-now)
+                sendCommand();
+                return true;
+            }
+            // Update chart date label
+            const chartLabel = document.getElementById('chartDateLabel');
+            if (chartLabel) chartLabel.textContent = "App Usage - " + getFormattedDateLabel();
+            return false;
+        }
+
+        document.addEventListener("DOMContentLoaded", () => {
+            if (!DEVICE_ID) {
+                alert("ID Missing!");
+                window.location.href = "index.html";
+                return;
+            }
+            // Check if date changed and reset usage data for new day
+            checkAndResetDailyUsage();
+            loadFromStorage();
+            startLiveUpdates();
+        });
+
+        function startLiveUpdates() {
+            fetchApps();
+            refreshInterval = setInterval(() => { fetchApps(); }, 4000);
+            if (typeof io === 'function') {
+                appsSocket = io(SERVER_URL, { transports: ['websocket', 'polling'], reconnection: true });
+                appsSocket.on('connect', () => appsSocket.emit('join', DEVICE_ID));
+                appsSocket.on('device_data_update', data => {
+                    if (data && String(data.device_id).toUpperCase() === String(DEVICE_ID).toUpperCase() && data.type === 'apps') fetchApps();
+                });
+            }
+            // Ask the child once after the page is ready; the socket event or the
+            // 10-second fallback refresh will render the complete snapshot.
+            sendCommand();
+        }
+
+        async function manualRefresh() {
+            document.getElementById("liveText").innerText = "Updating...";
+            await sendCommand();
+            for (let attempt = 0; attempt < 8; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 750));
+                await fetchApps();
+            }
+        }
+
+        async function clearCacheAndRefresh() {
+            // Clear all app-related localStorage
+            localStorage.removeItem(storageKey);
+            localStorage.removeItem(lockedListKey);
+            localStorage.removeItem(usageDateKey);
+            
+            // Reset in-memory data
+            allApps = [];
+            lockedApps = [];
+            lastRenderedSignature = '';
+            justResetDaily = true;
+            
+            // Update UI to show loading state
+            document.getElementById("liveText").innerText = "Clearing...";
+            document.getElementById("appsContainer").innerHTML = '';
+            document.getElementById("chartContent").innerHTML = `
+                <div class="no-usage-data">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <p>Clearing cache and fetching fresh data...</p>
+                </div>
+            `;
+            
+            // Send command to child phone to get fresh data
+            await sendCommand();
+            
+            // Poll for fresh data multiple times
+            for (let attempt = 0; attempt < 10; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 800));
+                await fetchApps();
+                
+                // If we got data, break early
+                if (allApps.length > 0 && allApps.some(app => app.usageMinutes > 0)) {
+                    break;
+                }
+            }
+            
+            document.getElementById("liveText").innerText = "Live";
+        }
+
+        function loadFromStorage() {
+            const savedData = localStorage.getItem(storageKey);
+            if (savedData) {
+                allApps = JSON.parse(savedData);
+                lastRenderedSignature = allApps.map(app => `${app.packageName}:${app.versionName || ''}`).sort().join('|');
+                renderApps(allApps);
+            }
+        }
+
+        function sendCommand() {
+            return fetch(`${SERVER_URL}/api/send-command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('access_token')||'') },
+                body: JSON.stringify({ device_id: DEVICE_ID, command: 'apps' })
+            }).catch(e => console.log(e));
+        }
+
+        // Smart Merging Logic + Search Preservation + Daily Reset
+        async function fetchApps() {
+            if (appsRequestInFlight) return;
+            appsRequestInFlight = true;
+            try {
+                // Check if date has changed (new day = reset usage)
+                const wasNewDay = checkAndResetDailyUsage();
+                if (wasNewDay) justResetDaily = true;
+
+                const res = await fetch(`${SERVER_URL}/api/get-data/${DEVICE_ID}/apps?t=${Date.now()}`, { cache: 'no-store' });
+                const newData = await res.json();
+                document.getElementById("liveText").innerText = "Live";
+                if (!Array.isArray(newData) || newData.length === 0) return;
+
+                // Smart Merging: Preserve usage data from localStorage when server data lacks it
+                // BUT skip preservation right after daily reset (new day = fresh data only)
+                const unique = new Map();
+                if (!justResetDaily) {
+                    (allApps || []).forEach(app => {
+                        if (app && app.packageName) unique.set(app.packageName, app);
+                    });
+                }
+                newData.forEach(app => {
+                    if (app && app.packageName) {
+                        const existing = unique.get(app.packageName);
+                        // Preserve usageMinutes from localStorage if server data doesn't have it
+                        // Only when NOT just after daily reset
+                        if (!justResetDaily && existing && existing.usageMinutes > 0 && (!app.usageMinutes || app.usageMinutes === 0)) {
+                            app.usageMinutes = existing.usageMinutes;
+                        }
+                        unique.set(app.packageName, app);
+                    }
+                });
+                const nextApps = Array.from(unique.values());
+                const signature = nextApps.map(app => `${app.packageName}:${app.versionName || ''}`).sort().join('|');
+                allApps = nextApps;
+                localStorage.setItem(storageKey, JSON.stringify(allApps));
+                justResetDaily = false; // Clear the flag after merge
+                document.getElementById("statusMsg").style.display = 'none';
+
+                // FIXED: If user is searching, apply filter instead of rendering full list
+                if (isSearchActive) {
+                    filterApps();
+                } else {
+                    renderApps(allApps);
+                }
+                lastRenderedSignature = signature;
+            } catch (e) {
+                document.getElementById("liveText").innerText = "Offline";
+            } finally {
+                appsRequestInFlight = false;
+            }
+        }
+
+        function renderApps(data) {
+            const container = document.getElementById("appsContainer");
+            document.getElementById("appCount").innerText = data.length;
+            container.innerHTML = "";
+
+            // Sort Alphabetically
+            data.sort((a, b) => a.appName.localeCompare(b.appName));
+
+            data.forEach(app => {
+                let iconSrc = app.icon && app.icon.length > 20 
+                    ? `data:image/png;base64,${app.icon}` 
+                    : 'https://cdn-icons-png.flaticon.com/512/160/160139.png';
+
+                const isLocked = lockedApps.includes(app.packageName);
+                const lockIcon = isLocked ? '<i class="fas fa-lock text-warning me-2"></i>' : '';
+
+                const div = document.createElement("div");
+                div.className = "app-item";
+                div.onclick = function() { openDetailsModal(app); };
+
+                div.innerHTML = `
+                    <img src="${iconSrc}" class="app-icon">
+                    <div class="app-details">
+                        <div class="app-name">${app.appName}</div>
+                        <div class="pkg-name">${app.packageName}</div>
+                        <div class="pkg-name" style="color: ${app.usageMinutes > 0 ? '#10b981' : '#64748b'}; margin-top: 2px;">
+                            <i class="fas fa-clock" style="font-size: 0.65rem;"></i> 
+                            ${app.usageMinutes > 0 ? 'Usage Today: ' + app.usageMinutes + ' min' : 'No usage data'}
+                            ${app.isLive ? ' <span style="color:#10b981;">● Active</span>' : ''}
+                        </div>
+                    </div>
+                    ${lockIcon}
+                    <i class="fas fa-chevron-right arrow-icon"></i>
+                `;
+                container.appendChild(div);
+            });
+
+            // Render pie chart
+            renderUsageChart(data);
+        }
+
+        function renderUsageChart(apps) {
+            const chartContent = document.getElementById('chartContent');
+            
+            // Filter apps with usage > 0 and sort by usage
+            const appsWithUsage = apps
+                .filter(app => app.usageMinutes > 0)
+                .sort((a, b) => b.usageMinutes - a.usageMinutes);
+
+            if (appsWithUsage.length === 0) {
+                chartContent.innerHTML = `
+                    <div class="no-usage-data">
+                        <i class="fas fa-clock"></i>
+                        <p>No usage data available</p>
+                        <small>Enable "App Usage Access" permission in phone app</small>
+                    </div>
+                `;
+                return;
+            }
+
+            // Get top 5 apps, group rest as "Other"
+            const topApps = appsWithUsage.slice(0, 5);
+            const otherApps = appsWithUsage.slice(5);
+            const otherMinutes = otherApps.reduce((sum, app) => sum + app.usageMinutes, 0);
+            
+            const chartData = [...topApps];
+            if (otherMinutes > 0) {
+                chartData.push({ appName: 'Other', usageMinutes: otherMinutes, color: '#64748b' });
+            }
+
+            // Calculate total usage
+            const totalMinutes = chartData.reduce((sum, app) => sum + app.usageMinutes, 0);
+            const totalHours = Math.floor(totalMinutes / 60);
+            const totalMins = totalMinutes % 60;
+            const totalTimeStr = totalHours > 0 ? `${totalHours}h ${totalMins}m` : `${totalMins}m`;
+
+            // Colors for chart segments
+            const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
+
+            // Build SVG donut chart
+            const size = 200;
+            const strokeWidth = 35;
+            const radius = (size - strokeWidth) / 2;
+            const circumference = 2 * Math.PI * radius;
+            
+            let svgPaths = '';
+            let currentOffset = 0;
+
+            chartData.forEach((app, index) => {
+                const percentage = app.usageMinutes / totalMinutes;
+                const dashLength = percentage * circumference;
+                const dashOffset = -currentOffset;
+                const color = app.color || colors[index % colors.length];
+                
+                svgPaths += `
+                    <circle
+                        cx="${size/2}"
+                        cy="${size/2}"
+                        r="${radius}"
+                        fill="none"
+                        stroke="${color}"
+                        stroke-width="${strokeWidth}"
+                        stroke-dasharray="${dashLength} ${circumference - dashLength}"
+                        stroke-dashoffset="${dashOffset}"
+                        transform="rotate(-90 ${size/2} ${size/2})"
+                    />
+                `;
+                currentOffset += dashLength;
+            });
+
+            // Build legend
+            const legendHtml = chartData.map((app, index) => {
+                const color = app.color || colors[index % colors.length];
+                const mins = app.usageMinutes;
+                const timeStr = mins >= 60 ? `${Math.floor(mins/60)}h ${mins%60}m` : `${mins}m`;
+                const shortName = app.appName.length > 12 ? app.appName.substring(0, 12) + '...' : app.appName;
+                return `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: ${color}"></div>
+                        <span class="legend-label" title="${app.appName}">${shortName}</span>
+                        <span class="legend-time">${timeStr}</span>
+                    </div>
+                `;
+            }).join('');
+
+            chartContent.innerHTML = `
+                <div class="chart-wrapper">
+                    <svg class="donut-chart" viewBox="0 0 ${size} ${size}">
+                        ${svgPaths}
+                    </svg>
+                    <div class="chart-center-text">
+                        <div class="label" id="chartCenterDate">${new Date().toLocaleDateString('en-IN', {day: 'numeric', month: 'short'})}</div>
+                        <div class="value">${totalTimeStr}</div>
+                    </div>
+                </div>
+                <div class="chart-legend">
+                    ${legendHtml}
+                </div>
+            `;
+        }
+
+        function filterApps() {
+            const q = document.getElementById('searchInput').value.toLowerCase();
+            // Track if search is active (non-empty query)
+            isSearchActive = q.trim().length > 0;
+            if (!isSearchActive) {
+                // Empty search - render full list
+                renderApps(allApps);
+                return;
+            }
+            const filtered = allApps.filter(app => 
+                (app.appName && app.appName.toLowerCase().includes(q)) || 
+                (app.packageName && app.packageName.toLowerCase().includes(q))
+            );
+            renderApps(filtered);
+        }
+
+        function openDetailsModal(app) {
+            currentAppPkg = app.packageName;
+
+            document.getElementById("modalName").innerText = app.appName;
+            document.getElementById("modalPkg").innerText = app.packageName;
+            
+            let iconSrc = app.icon && app.icon.length > 20 
+                    ? `data:image/png;base64,${app.icon}` 
+                    : 'https://cdn-icons-png.flaticon.com/512/160/160139.png';
+            document.getElementById("modalIcon").src = iconSrc;
+            document.getElementById("modalVersion").innerText = app.versionName || "Unknown";
+            document.getElementById("modalDate").innerText = app.installDate || "N/A";
+            document.getElementById("modalPath").innerText = `/data/user/0/${app.packageName}`;
+            
+            // Show usage time in modal
+            const usageEl = document.getElementById("modalUsage");
+            if (usageEl) {
+                usageEl.innerText = app.usageMinutes > 0 ? app.usageMinutes + ' minutes today' : 'No usage data available';
+            }
+
+            // Reset Uninstall Button State every time modal opens
+            resetUninstallButton();
+            
+            updateToggleButtonUI();
+            const myModal = new bootstrap.Modal(document.getElementById('appDetailModal'));
+            myModal.show();
+        }
+
+        function updateToggleButtonUI() {
+            const btn = document.getElementById("btnToggleLock");
+            const isLocked = lockedApps.includes(currentAppPkg);
+
+            if (isLocked) {
+                btn.className = "btn-toggle btn-state-unlock";
+                btn.innerHTML = '<i class="fas fa-unlock"></i> UNLOCK APP';
+            } else {
+                btn.className = "btn-toggle btn-state-lock";
+                btn.innerHTML = '<i class="fas fa-ban"></i> LOCK APP';
+            }
+        }
+
+        function toggleAppLock() {
+            if(!currentAppPkg) return;
+            const isLocked = lockedApps.includes(currentAppPkg);
+
+            if (isLocked) {
+                sendCommandToDevice(`enable:${currentAppPkg}`);
+                lockedApps = lockedApps.filter(pkg => pkg !== currentAppPkg);
+            } else {
+                sendCommandToDevice(`disable:${currentAppPkg}`);
+                lockedApps.push(currentAppPkg);
+            }
+            localStorage.setItem(lockedListKey, JSON.stringify(lockedApps));
+            updateToggleButtonUI();
+            renderApps(allApps);
+        }
+
+        // 🔥 FIXED: Uninstall Button Reset Logic
+        function sendUninstallCommand() {
+            if(!currentAppPkg) return;
+            
+            const btn = document.getElementById('btnUninstall');
+            
+            // Prevent multiple clicks immediately
+            if(btn.disabled) return;
+
+            // 1. Send Command
+            sendCommandToDevice(`uninstall:${currentAppPkg}`);
+
+            // 2. Change UI to "Sent" (Green)
+            btn.innerHTML = '<i class="fas fa-check"></i> Command Sent!';
+            btn.classList.add('btn-action-sent');
+            btn.classList.remove('btn-action-uninstall'); // remove red style temporarily
+            btn.disabled = true; // Disable button to prevent spam
+
+            // 3. Revert back to Normal after 2.5 seconds
+            setTimeout(() => {
+                resetUninstallButton();
+            }, 2500);
+        }
+
+        function resetUninstallButton() {
+            const btn = document.getElementById('btnUninstall');
+            btn.innerHTML = '<i class="fas fa-trash"></i> Uninstall App';
+            btn.classList.remove('btn-action-sent');
+            btn.classList.add('btn-action-uninstall'); // Add red style back
+            btn.disabled = false; // Enable button again
+        }
+
+        function sendCommandToDevice(cmd) {
+            fetch(`${SERVER_URL}/api/send-command`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (localStorage.getItem('access_token')||'') },
+                body: JSON.stringify({ device_id: DEVICE_ID, command: cmd })
+            });
+        }
+    </script>
+</body>
+</html>
