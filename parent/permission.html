@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>
+/* Auth fetch: attach JWT + auto-refresh on 401 (fixes mid-session logout / dead buttons) */
+(function(){
+  try {
+    var F = window.fetch;
+    var refreshing = null;
+    function getAccess(){ try { return localStorage.getItem('access_token')||''; } catch(e){ return ''; } }
+    function getRefresh(){ try { return localStorage.getItem('refresh_token')||''; } catch(e){ return ''; } }
+    function setTokens(a,r){
+      try {
+        if(a) localStorage.setItem('access_token', a);
+        if(r) localStorage.setItem('refresh_token', r);
+      } catch(e){}
+    }
+    function apiBaseFrom(u){
+      try {
+        if(/^https?:\/\//i.test(u)){ var x=new URL(u); return x.origin; }
+      } catch(e){}
+      return (window.API_BASE||window.SERVER_URL||window.BASE_URL||location.origin||'').replace(/\/$/,'');
+    }
+    function doRefresh(base){
+      if(refreshing) return refreshing;
+      var rt = getRefresh();
+      if(!rt) return Promise.reject(new Error('no refresh'));
+      refreshing = F.call(window, (base||location.origin) + '/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt })
+      }).then(function(res){
+        return res.json().then(function(d){ return { ok: res.ok, d: d }; });
+      }).then(function(x){
+        refreshing = null;
+        if(!x.ok || !(x.d.accessToken||x.d.access_token)) throw new Error('refresh failed');
+        var a = x.d.accessToken || x.d.access_token;
+        var r = x.d.refreshToken || x.d.refresh_token || rt;
+        setTokens(a, r);
+        return a;
+      }).catch(function(e){ refreshing = null; throw e; });
+      return refreshing;
+    }
+    window.fetch = function(input, init){
+      init = init || {};
+      var url = typeof input === 'string' ? input : ((input && input.url) || '');
+      var isApi = url.indexOf('/api/') !== -1;
+      var isRefresh = url.indexOf('/api/auth/refresh') !== -1;
+      if(isApi && !isRefresh){
+        try {
+          var t = getAccess();
+          if(t){
+            var h = new Headers(init.headers || {});
+            if(!h.has('Authorization')) h.set('Authorization', 'Bearer ' + t);
+            init.headers = h;
+          }
+        } catch(e){}
+      }
+      return F.call(this, input, init).then(function(res){
+        if(!isApi || isRefresh || res.status !== 401) return res;
+        var base = apiBaseFrom(url);
+        return doRefresh(base).then(function(newTok){
+          var h2 = new Headers(init.headers || {});
+          h2.set('Authorization', 'Bearer ' + newTok);
+          init.headers = h2;
+          return F.call(window, input, init);
+        }).catch(function(){
+          // refresh failed — only clear if both tokens bad; avoid aggressive logout loops
+          return res;
+        });
+      });
+    };
+  } catch(e){}
+})();
+</script>
+
+
+
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Permissions</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+body{font-family:Segoe UI,sans-serif;background:#0f0f12;color:#eee;margin:0;padding:16px}
+.header{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.header a{color:#a78bfa;text-decoration:none;font-size:1.2rem}
+h1{font-size:1.1rem;margin:0;flex:1}
+.btn{background:#7c3aed;color:#fff;border:none;border-radius:10px;padding:8px 14px;cursor:pointer;font-weight:600}
+.card{background:#1a1a22;border:1px solid #2a2a35;border-radius:12px;padding:12px 14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.name{font-weight:600}.sub{font-size:.75rem;color:#888;margin-top:2px}
+.ok{color:#22c55e;font-weight:700}.no{color:#ef4444;font-weight:700}
+.status{text-align:center;color:#888;padding:24px}
+</style>
+</head>
+<body>
+<div class="header">
+  <a href="javascript:history.back()"><i class="fa-solid fa-arrow-left"></i></a>
+  <h1>Permissions Status</h1>
+  <button class="btn" onclick="refresh()">Refresh</button>
+</div>
+<div id="list" class="status">Open phone app → Allow Permissions. Then Refresh here.</div>
+<script>
+        // --- AUTH CHECK ---
+        (function(){
+            var t = localStorage.getItem("access_token");
+            if(!t){ window.location.href='/login'; return; }
+            try {
+                var u = JSON.parse(localStorage.getItem("user") || "{}");
+                if(!u.email){ window.location.href='/login'; }
+            } catch(e){ window.location.href='/login'; }
+        })();
+
+const DEVICE_ID = new URLSearchParams(location.search).get('id') || localStorage.getItem('monitoring_id') || '';
+const API = 'https://parents-control-website-lyqz.onrender.com';
+async function sendCommand(cmd){
+  if(!DEVICE_ID) return;
+  await fetch(API+'/api/send-command',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('access_token')||'')},body:JSON.stringify({device_id:DEVICE_ID,command:cmd})});
+}
+async function load(){
+  const el=document.getElementById('list');
+  if(!DEVICE_ID){el.innerHTML='Device ID missing';return;}
+  try{
+    const res=await fetch(API+'/api/get-data/'+encodeURIComponent(DEVICE_ID)+'/permission_status?t='+Date.now());
+    let data=await res.json();
+    if(!Array.isArray(data)||!data.length){el.innerHTML='<div class="status">Waiting… Grant permissions on phone, then Refresh.</div>';return;}
+    el.innerHTML=data.map(p=>{
+      const ok=!!p.granted;
+      return `<div class="card"><div><div class="name">${p.name||p.permission}</div><div class="sub">${p.permission||''}</div></div><div class="${ok?'ok':'no'}">${ok?'ALLOWED':'NOT ALLOWED'}</div></div>`;
+    }).join('');
+  }catch(e){el.innerHTML='<div class="status">Failed to load</div>';}
+}
+async function refresh(){document.getElementById('list').innerHTML='<div class="status">Requesting…</div>';await sendCommand('permission_status');setTimeout(load,2500);setTimeout(load,5000);}
+load();setInterval(load,10000);
+</script>
+</body>
+</html>
